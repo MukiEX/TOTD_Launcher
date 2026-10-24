@@ -1,5 +1,7 @@
 # The Typing of the Dead — Two-keyboard Launcher
 
+<img width="884" height="552" alt="image" src="https://github.com/user-attachments/assets/9dfb395d-afd8-4bd4-a3ee-22de2298dbdd" />
+
 Local two-player keyboard input and modern graphics support for the Windows
 release of The Typing of the Dead (`Tod_e.exe`, timestamp `0x3A1CF9B4`).
 
