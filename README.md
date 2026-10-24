@@ -1,98 +1,91 @@
-# TotD2P — two keyboards for The Typing of the Dead (PC)
+# The Typing of the Dead — Two-keyboard Launcher
 
-Local 2-player co-op on one PC with two keyboards, for the Windows release of
-*The Typing of the Dead* (`Tod_e.exe`, build dated 2000-11-23).
+Local two-player keyboard input and modern graphics support for the Windows
+release of The Typing of the Dead (`Tod_e.exe`, timestamp `0x3A1CF9B4`).
 
-## Install
+## Features
 
-1. Copy `dinput.dll` into the game folder, next to `Tod_e.exe`.
-2. Copy `TotD2P.exe` anywhere (the game folder is easiest).
-3. Run `TotD2P.exe`. If it isn't in the game folder, press **F2** once to
-   locate `Tod_e.exe` (remembered in `tod2p.ini`).
+- Assign physical keyboards independently to Player 1 or Player 2.
+- Retain keyboard assignments between sessions.
+- Embed and deploy the DirectInput proxy and dgVoodoo DirectDraw components.
+- Select original 640x480, native fullscreen, borderless 4:3, or 1280x960 window modes.
+- Start the game without requesting administrator privileges.
+- Convert Player 2 printable keys into the character format expected by gameplay.
+
+## Build on Windows
+
+Install an LLVM-MinGW or MinGW-w64 toolchain with an i686 Windows target.
+The development build used LLVM-MinGW 20261020 UCRT.
+
+From this repository:
+
+```powershell
+.\scripts\fetch-dgvoodoo.ps1
+.\build-windows.ps1 -ToolchainBin 'C:\path\to\llvm-mingw\bin'
+```
+
+This produces `build\TotD2P.exe` and `build\dinput.dll`. The launcher embeds
+all required proxy DLLs and a default graphics configuration, so only the
+launcher needs to be copied to a writable game folder.
+
+With GNU make, run the fetch script first, then `make` using an
+`i686-w64-mingw32-gcc` / `i686-w64-mingw32-windres` toolchain.
 
 ## Use
 
-- Press any key on each keyboard: it appears as a card under **Player 1**.
-- On the keyboard you want for player 2, press **→** or **D**: its card moves to
-  **Player 2**. **←** / **A** moves it back. Unlisted keyboards are Player 1.
-- Press **Enter** to start the game. **Leave the launcher open** while you play;
-  closing it turns 2-keyboard mode off (the game falls back to stock behaviour).
-- Launcher keys only work while the launcher window is in front, so typing
-  in-game never reassigns keyboards.
+1. Close previous game and launcher instances. Put the built `TotD2P.exe`
+   beside `Tod_e.exe`, then run it normally. F2 can select a game elsewhere.
+2. Press a key on each keyboard to display it.
+3. Press Right/D on the second keyboard to assign it to Player 2.
+   Left/A assigns a keyboard to Player 1.
+4. Press F3 to choose a display mode, then Enter to start.
+5. Keep the launcher open while playing.
 
-### Display mode (F3)
+Launcher shortcuts apply only while its window is focused. Unassigned
+keyboards belong to Player 1. The launcher writes settings to `tod2p.ini`
+and the proxy writes diagnostics to `tod2p.log` beside the game.
 
-Press **F3** in the launcher to cycle display modes. The choice is saved and
-applies the next time the game starts:
+At launch, the embedded DLLs are extracted beside the game. A different
+existing DLL is preserved as `NAME.pre-dgvoodoo`; deployment stops if that
+backup already exists. Resolve an existing backup before another conflicting
+update. An existing `dgVoodoo.conf` is preserved except for the display
+settings owned by F3. No game executable is distributed or modified.
 
-| Mode | What you get |
-|---|---|
-| Original 640x480 | Stock behaviour |
-| Fullscreen native (stretched) | Exclusive fullscreen at your desktop resolution; 4:3 image stretched to fill |
-| Borderless 4:3 | Rendered at your desktop height in 4:3 (e.g. 1440x1080 on 1080p), centred with black bars |
-| Window 1280x960 | A normal 2x window |
+## Graphics
 
-The engine (Sega's HGL layer) already supports any resolution. The game just
-hardcodes 640x480. The proxy patches that mode table entry, plus the
-hardcoded 640x480 used at window creation, before the game starts, so the
-D3D back buffer is genuinely rendered at the new size. Windowed modes ignore
-`FullScreen=T` in `hglCore.ini`.
+The game keeps its original 640x480 display initialization. dgVoodoo controls
+higher-resolution rendering and output, avoiding HGL's exact-mode device
+checks. The default backend is D3D12; change `OutputAPI` in `dgVoodoo.conf`
+to `d3d11_fl11_0` if needed. Old Windows compatibility settings can interfere.
+The launcher does not change those settings or write system registry keys.
 
-Assignments are saved per keyboard (by USB device path), so the same keyboard on
-the same USB port keeps its slot. If you move a keyboard to another port, press
-A/D on it once again.
+The launcher has an `asInvoker` manifest and starts the game with
+`RunAsInvoker` in its child environment. A writable installation folder is
+still required.
 
-## How it works
+## Verification and status
 
-The PC port emulates the Dreamcast's Maple controller ports. Ports A and B are
-both hard-wired as keyboards, and the game logic gives a player slot to every
-port reporting a keyboard. The PC input layer fills port A from DirectInput but
-deliberately skips port B, which only the (still present) DirectPlay network mode
-writes to: the remote player's keyboard goes into port B's 8-byte Dreamcast
-keyboard block at `0x847F10`.
+The Windows build passes compilation with warnings enabled.
+`test/integration.c` checks deployment, backups, configuration preservation,
+and all four display settings. `test/letters.c` checks printable conversion,
+Shift, controls, port-B output, release, and rollover. See
+[tests](test/README.md) for commands.
 
-- **TotD2P.exe** reads all keyboards with Raw Input (one stream per physical
-  device) and publishes Player 1 / Player 2 key state through shared memory.
-- **dinput.dll** (proxy) forwards everything to the real `dinput.dll` and hooks
-  the system keyboard device. The game's keyboard reads (`GetDeviceData` +
-  `GetDeviceState`) now return Player 1's keyboards only, and Player 2's keys are
-  written to port B in the same poll, in the game's own format (modifier bits as
-  the game builds them, HID key codes through the game's DIK→HID table, so the
-  Keyboard Type option applies, plus 6-key rollover with ErrorRollOver).
+The user confirmed Player 2 Enter/start input worked. The printable-letter
+fix passes the isolated tests but still needs verification with two physical
+keyboards during gameplay. Full game launching could not be tested in the
+agent environment due to a Windows DLL relocation error.
 
-Safety: the DLL only writes port B when the exe's PE timestamp is `0x3A1CF9B4`
-and it loads at `0x400000`. Any other build gets P1 filtering only. Without a
-running launcher the DLL is a pure passthrough.
+`test/fakegame.c` is retained from the original source. Its direct engine
+resolution-patching tests describe the old implementation and no longer apply.
 
-`tod2p.log` in the game folder records what the proxy did.
+## Credits and third-party components
 
-## Wine / Proton (Linux, Steam Deck)
+- Original launcher and DirectInput proxy: **Claude**, as identified by the
+  project owner. The original source is the first commit in this repository.
+- dgVoodoo integration, wrapper-based display handling, printable Player 2
+  conversion, and packaging: **OpenAI Codex**, at the project owner's request.
+- dgVoodoo 2.87.5: **Dege**, distributed separately from its
+  [official releases](https://github.com/dege-diosg/dgVoodoo2/releases/tag/v2.87.5).
 
-Wine uses its built-in `dinput` unless told otherwise. Set
-`WINEDLLOVERRIDES="dinput=n,b"` (or add a `dinput` *native, builtin* override in
-winecfg). Run `TotD2P.exe` in the same prefix, since shared memory is per prefix.
-Under Wine, Raw Input may not tell physical keyboards apart, depending on the
-Wine version.
-
-## Status
-
-Tested under Wine with a harness that impersonates `Tod_e.exe` (same PE
-timestamp, memory at the game's addresses): P1 filtering, P2 port-B output, key
-slot ordering, rollover, launcher-loss release, buffer overflow, and real Raw
-Input → launcher → proxy for both players. **Not yet tested in the real game.**
-Display modes are tested only for the patching and window placement (harness
-under Wine), not for in-game rendering. Open questions:
-
-- Whether every 2D element scales with resolution (strong evidence says yes:
-  the game positions things in a fixed 640x480 virtual space and the engine
-  already handles a 320x240 mode), and whether windowed modes keep the right
-  game speed.
-
-- How player 2 joins in-game (Enter/Start-style key, or any typing).
-- Whether name entry or menus read typed characters from window messages. If so,
-  P2's keys would also reach those screens as P1.
-
-## Build
-
-Needs `i686-w64-mingw32-gcc`. Run `make`, which writes `build/dinput.dll` and
-`build/TotD2P.exe`. `test/fakegame.c` is the test harness.
+See [AUTHORS.md](AUTHORS.md) and [LICENSE-NOTICE.md](LICENSE-NOTICE.md).

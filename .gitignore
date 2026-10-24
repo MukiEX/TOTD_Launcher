@@ -1,0 +1,6 @@
+/build/
+/.cache/
+/integration-scratch/
+/vendor/dgVoodoo/*.dll
+*.log
+tod2p.ini

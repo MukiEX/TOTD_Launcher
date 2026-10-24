@@ -1,0 +1,6 @@
+#include <windows.h>
+1 RT_MANIFEST "launcher/launcher.manifest"
+201 RCDATA "vendor/dgVoodoo/DDraw.dll"
+202 RCDATA "vendor/dgVoodoo/D3DImm.dll"
+203 RCDATA "vendor/dgVoodoo/dgVoodoo.conf"
+204 RCDATA "build/dinput.dll"

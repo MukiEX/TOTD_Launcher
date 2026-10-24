@@ -235,6 +235,36 @@ static int is_modifier_dik(int d)
            d == 0x9D || d == 0xB8 || d == 0xDB || d == 0xDC;
 }
 
+/* HGL's 0x4B8050 converts printable keys to ASCII | 0x80 before exposing
+ * a port condition to gameplay. HID values alone only work for control keys
+ * such as Enter. Translate P2 independently, without using P1's held keys. */
+static uint8_t gameplay_key(int dik, uint8_t hid, const volatile uint8_t *state)
+{
+    BYTE keyboard[256] = {0};
+    HKL layout = GetKeyboardLayout(0);
+    for (int d = 0; d < 256; d++) {
+        if (!(state[d] & 0x80)) continue;
+        UINT scan = (UINT)(d & 0x7f) | ((d & 0x80) ? 0xe000u : 0);
+        UINT vk = MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK_EX, layout);
+        if (vk < 256) keyboard[vk] = 0x80;
+    }
+    keyboard[VK_SHIFT] = (state[0x2a] | state[0x36]) & 0x80;
+    keyboard[VK_CONTROL] = (state[0x1d] | state[0x9d]) & 0x80;
+    keyboard[VK_MENU] = (state[0x38] | state[0xb8]) & 0x80;
+    keyboard[VK_CAPITAL] |= GetKeyState(VK_CAPITAL) & 1;
+    UINT scan = (UINT)(dik & 0x7f) | ((dik & 0x80) ? 0xe000u : 0);
+    UINT vk = MapVirtualKeyExW(scan, MAPVK_VSC_TO_VK_EX, layout);
+    WCHAR chars[8] = {0};
+    /* Flag 4 prevents dead-key state changes on Windows 10 1607 and later. */
+    int n = ToUnicodeEx(vk, (UINT)dik, keyboard, chars, 8, 4, layout);
+    if (n > 0 && chars[0] >= 0x20 && chars[0] <= 0x7e) {
+        if (vk == '3' && keyboard[VK_SHIFT] &&
+            *(const DWORD *)0x00848714u == 1) return 0xff; /* game's JP Shift+3 rule */
+        return (uint8_t)(chars[0] | 0x80);
+    }
+    return hid;
+}
+
 /* ---- Player 2 -> Maple port B ------------------------------------------- */
 static void write_port_b(const volatile uint8_t *state /* NULL = release all */)
 {
@@ -273,7 +303,17 @@ static void write_port_b(const volatile uint8_t *state /* NULL = release all */)
     }
 
     if (overflow) memset(&cond[2], 0x01, 6);   /* ErrorRollOver, like port A */
-    else          memcpy(&cond[2], keys, 6);
+    else {
+        memcpy(&cond[2], keys, 6);
+        if (state) for (int i = 0; i < n; i++) {
+            for (int d = 0; d < 256; d++) {
+                if ((state[d] & 0x80) && !is_modifier_dik(d) && g_dik2hid[d] == keys[i]) {
+                    cond[2 + i] = gameplay_key(d, keys[i], state);
+                    break;
+                }
+            }
+        }
+    }
     memcpy(g_p2keys, overflow ? g_p2keys : keys, 6);
 
     memcpy((void *)TOD_PORTB_COND, cond, 8);
@@ -425,6 +465,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD reason, LPVOID reserved)
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(inst);
         open_log();
+        logf_("TotD2P v3: Player 2 printable-key conversion enabled");
         const uint8_t *base = (const uint8_t *)GetModuleHandleW(NULL);
         const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)base;
         const IMAGE_NT_HEADERS32 *nt = (const IMAGE_NT_HEADERS32 *)(base + dos->e_lfanew);

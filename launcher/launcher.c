@@ -254,6 +254,80 @@ static void set_player(Kbd *k, int player)
 }
 
 /* ---- game launching ----------------------------------------------------- */
+/* dgVoodoo is distributed unmodified as application-local DLLs. Keep an
+ * existing different DLL as a backup; never silently overwrite that backup. */
+static int unpack_file(const WCHAR *dir, const WCHAR *name, int id, int config)
+{
+    WCHAR path[MAX_PATH], backup[MAX_PATH];
+    if (wcslen(dir) + wcslen(name) + 24 >= MAX_PATH) {
+        set_status(L"Game folder path is too long."); return 0;
+    }
+    _snwprintf(path, MAX_PATH, L"%ls%ls", dir, name);
+    if (config && file_exists(path)) return 1;
+    HRSRC res = FindResourceW(NULL, MAKEINTRESOURCEW(id), RT_RCDATA);
+    HGLOBAL loaded = res ? LoadResource(NULL, res) : NULL;
+    const void *data = loaded ? LockResource(loaded) : NULL;
+    DWORD size = res ? SizeofResource(NULL, res) : 0;
+    if (!data || !size) { set_status(L"Embedded component missing: %ls", name); return 0; }
+    if (file_exists(path)) {
+        HANDLE old = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+        int same = 0;
+        if (old != INVALID_HANDLE_VALUE) {
+            DWORD got = 0;
+            void *buf = HeapAlloc(GetProcessHeap(), 0, size);
+            if (buf && GetFileSize(old, NULL) == size && ReadFile(old, buf, size, &got, NULL))
+                same = got == size && !memcmp(buf, data, size);
+            if (buf) HeapFree(GetProcessHeap(), 0, buf);
+            CloseHandle(old);
+        }
+        if (same) return 1;
+        _snwprintf(backup, MAX_PATH, L"%ls.pre-dgvoodoo", path);
+        if (!CopyFileW(path, backup, TRUE)) {
+            set_status(L"Cannot back up %ls (error %lu). Close the game or check the backup.", name, GetLastError());
+            return 0;
+        }
+    }
+    HANDLE out = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD written = 0;
+    int ok = out != INVALID_HANDLE_VALUE && WriteFile(out, data, size, &written, NULL) && written == size;
+    DWORD err = GetLastError();
+    if (out != INVALID_HANDLE_VALUE) CloseHandle(out);
+    if (!ok) set_status(L"Cannot write %ls (error %lu). Use a writable game folder.", name, err);
+    return ok;
+}
+
+static int prepare_graphics(const WCHAR *dir)
+{
+    return unpack_file(dir, L"DDraw.dll", 201, 0) &&
+           unpack_file(dir, L"D3DImm.dll", 202, 0) &&
+           unpack_file(dir, L"dgVoodoo.conf", 203, 1) &&
+           unpack_file(dir, L"dinput.dll", 204, 0);
+}
+
+static int configure_display(const WCHAR *dir, uint32_t mode)
+{
+    WCHAR config[MAX_PATH], resolution[64];
+    if (wcslen(dir) + 16 >= MAX_PATH) return 0;
+    _snwprintf(config, MAX_PATH, L"%lsdgVoodoo.conf", dir);
+    int sw = GetSystemMetrics(SM_CXSCREEN), sh = GetSystemMetrics(SM_CYSCREEN);
+    int w = sw, h = sh;
+    if (mode == TOD2P_DISPLAY_BORDERLESS) {
+        w = sh * 4 / 3;
+        if (w > sw) { w = sw; h = sw * 3 / 4; }
+        w &= ~1; h &= ~1;
+    } else if (mode == TOD2P_DISPLAY_WINDOW2X) { w = 1280; h = 960; }
+    if (mode == TOD2P_DISPLAY_ORIGINAL) lstrcpyW(resolution, L"unforced");
+    else _snwprintf(resolution, 64, L"h:%d, v:%d", w, h);
+    int windowed = mode == TOD2P_DISPLAY_BORDERLESS || mode == TOD2P_DISPLAY_WINDOW2X;
+    /* Own only settings needed by F3. Other graphics preferences are retained. */
+    return WritePrivateProfileStringW(L"DirectX", L"Resolution", resolution, config) &&
+        WritePrivateProfileStringW(L"DirectX", L"AppControlledScreenMode", L"false", config) &&
+        WritePrivateProfileStringW(L"General", L"FullScreenMode", windowed ? L"false" : L"true", config) &&
+        WritePrivateProfileStringW(L"General", L"ScalingMode", mode == TOD2P_DISPLAY_FULL_NATIVE ? L"stretched" : L"stretched_ar", config) &&
+        WritePrivateProfileStringW(L"General", L"CenterAppWindow", L"true", config) &&
+        WritePrivateProfileStringW(L"GeneralExt", L"WindowedAttributes", mode == TOD2P_DISPLAY_BORDERLESS ? L"borderless, fullscreensize" : L"", config);
+}
+
 static int browse_for_game(void)
 {
     WCHAR file[MAX_PATH] = L"Tod_e.exe";
@@ -279,6 +353,10 @@ static void launch_game(void)
     }
     WCHAR dir[MAX_PATH], dll[MAX_PATH];
     exe_dir(dir, g_gameExe);
+    if (!prepare_graphics(dir)) return;
+    if (!configure_display(dir, g_display)) {
+        set_status(L"Cannot update dgVoodoo.conf for the selected display mode."); return;
+    }
     _snwprintf(dll, MAX_PATH - 1, L"%lsdinput.dll", dir);
     dll[MAX_PATH - 1] = 0;
     if (!file_exists(dll)) {
@@ -290,8 +368,19 @@ static void launch_game(void)
     cmd[MAX_PATH + 3] = 0;
     STARTUPINFOW si = { sizeof si };
     PROCESS_INFORMATION pi;
-    if (!CreateProcessW(g_gameExe, cmd, NULL, NULL, FALSE, 0, NULL, dir[0] ? dir : NULL, &si, &pi)) {
-        set_status(L"Could not start the game (error %lu).", GetLastError());
+    /* Restrict the compatibility override to the child. No machine settings,
+     * elevation, or registry writes are needed. */
+    DWORD envSize = GetEnvironmentVariableW(L"__COMPAT_LAYER", NULL, 0);
+    WCHAR *saved = envSize ? HeapAlloc(GetProcessHeap(), 0, envSize * sizeof(WCHAR)) : NULL;
+    if (envSize && !saved) { set_status(L"Out of memory preparing game environment."); return; }
+    if (saved) GetEnvironmentVariableW(L"__COMPAT_LAYER", saved, envSize);
+    SetEnvironmentVariableW(L"__COMPAT_LAYER", L"RunAsInvoker");
+    BOOL started = CreateProcessW(g_gameExe, cmd, NULL, NULL, FALSE, 0, NULL, dir[0] ? dir : NULL, &si, &pi);
+    DWORD launchError = GetLastError();
+    SetEnvironmentVariableW(L"__COMPAT_LAYER", saved);
+    if (saved) HeapFree(GetProcessHeap(), 0, saved);
+    if (!started) {
+        set_status(L"Could not start the game (error %lu).", launchError);
         return;
     }
     CloseHandle(pi.hThread);
